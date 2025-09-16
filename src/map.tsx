@@ -1,614 +1,342 @@
-import { useEffect, useRef, useState } from 'react';
-import { IoIosArrowDown, IoIosArrowUp } from "react-icons/io";
-import MobileDropdown from './MobileDropdown';
-import 'ol/ol.css';
-import { Map, View } from 'ol';
-import { fromLonLat, transformExtent } from 'ol/proj';
-import VectorLayer from 'ol/layer/Vector';
-import VectorSource from 'ol/source/Vector';
-import GeoJSON from 'ol/format/GeoJSON';
-import Style from 'ol/style/Style';
-import Stroke from 'ol/style/Stroke';
-import Fill from 'ol/style/Fill';
-import MapList from '@/components/MapList';
-import Feature from 'ol/Feature';
-import Icon from 'ol/style/Icon';
-import Point from 'ol/geom/Point';
+import { useEffect, useRef, useState } from "react";
+import { get as getProjection } from "ol/proj";
+import { unByKey } from "ol/Observable";
+import "ol/ol.css";
+import { Map, View } from "ol";
+import { fromLonLat } from "ol/proj";
+import VectorLayer from "ol/layer/Vector";
+import VectorSource from "ol/source/Vector";
+import GeoJSON from "ol/format/GeoJSON";
+import { Style, Fill, Stroke, Circle as CircleStyle } from "ol/style";
+import Feature from "ol/Feature";
+import Point from "ol/geom/Point";
+import Overlay from "ol/Overlay";
 
-import entitie1 from '@/assets/icons/icon_8.png';
-import entitie2 from '@/assets/icons/icon_5.png';
-import entitie3 from '@/assets/icons/icon_6.png';
-import entitie4 from '@/assets/icons/icon_10.png';
-import entitie5 from '@/assets/icons/icon_9.png';
-import entitie6 from '@/assets/icons/icon_11.png';
+type Mode =
+    | "all-producers"
+    | "top-producers"
+    | "competitors-specialty"; // libellés FR dans l’UI
 
-export default function MapComponent() {
-    const mapRef = useRef<HTMLDivElement>(null);
-    const [_, setMap] = useState<Map | null>(null);
-    const [selectedFeature, setSelectedFeature] = useState<any>(null);
-    const [selectedZone, setSelectedZone] = useState<'commune' | 'reunion' | 'group' | 'interco' | 'zones-pc'>('reunion');
-    const [searchTerm, setSearchTerm] = useState('');
-    const [filteredZones, setFilteredZones] = useState<string[]>([]);
-    const [selectedName, setSelectedName] = useState<string | null>(null);
-    const [showLegendMobile, setShowLegendMobile] = useState(false);
+// ————————————————————————————————————————
+// Données (exemples) — adapte librement
+// ISO-A3 pour filtrer les pays dans le GeoJSON
+const ALL_SUGAR_PRODUCERS = new Set<string>([
+    // échantillon — complète ta liste
+    "BRA", "IND", "CHN", "THA", "MEX", "USA", "FRA", "RUS", "AUS", "VNM", "IDN", "PAK", "PHL", "ZAF", "EGY"
+]);
 
-    const zones = [
-        "la réunion",
-        "bois rouge",
-        "le gol",
-        "saint-paul",
-        "le port",
-        "saint-denis",
-        "la possession",
-        "saint-leu",
-        "saint-andré",
-        "saint-benoît",
-        "saint-joseph",
-        "saint-louis",
-        "saint-pierre",
-        "saint-philippe",
-        "sainte-rose",
-        "sainte-marie",
-        "sainte-suzanne",
-        "le tampon",
-        "bras-panon",
-        "cilaos",
-        "entre-deux",
-        "petite-île",
-        "la plaine-des-palmistes",
-        "salazie",
-        "l'étang-salé",
-        "les avirons",
-        "les trois-bassins",
-    ];
+const TOP_PRODUCERS = new Set<string>(["BRA", "IND", "CHN", "THA", "MEX", "USA", "RUS"]); // exemple
 
-    const handleCloseCard = () => {
-        setSelectedFeature(null);
-        setSelectedName(null);
-    };
+const COMPETITORS_SPECIALTY = new Set<string>(["FRA", "DEU", "GBR", "NLD"]); // “concurrents sucres de spécialité”
 
-    const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const value = e.target.value.toLowerCase();
-        setSearchTerm(value);
-        setFilteredZones(zones.filter((zone) => zone.includes(value)));
-    };
+// pins (centroïdes simples)
+const PINS: Array<{ iso3: string; name: string; lon: number; lat: number }> = [
+    { iso3: "USA", name: "États-Unis", lon: -98.5, lat: 39.5 },
+    { iso3: "MEX", name: "Mexique", lon: -102.5, lat: 23.5 },
+    { iso3: "BRA", name: "Brésil", lon: -51.9253, lat: -14.235 },
+    { iso3: "FRA", name: "France", lon: 2.2137, lat: 46.2276 },
+    { iso3: "RUS", name: "Russie", lon: 105.3188, lat: 61.524 },
+    { iso3: "IND", name: "Inde", lon: 78.9629, lat: 20.5937 },
+    { iso3: "CHN", name: "Chine", lon: 104.1954, lat: 35.8617 },
+    { iso3: "THA", name: "Thaïlande", lon: 100.9925, lat: 15.870 },
+    { iso3: "AUS", name: "Australie", lon: 133.7751, lat: -25.274 }
+];
 
-    const handleSelect = (zone: string) => {
-        setSearchTerm(zone);
-        setFilteredZones([]);
-        setSelectedName(zone);
+// ————————————————————————————————————————
+// Styles (proches de ta carte Réunion)
+const COLOR_BG = "#eaeeed";               // fond
+const COLOR_DEFAULT = "#e9eceb";          // pays non-sélection
+const COLOR_STROKE = "rgba(45,95,82,0.6)";
+const COLOR_SELECTED = "#88b940";         // vert “principal”
+const COLOR_HOVER = "#2D5F52";            // vert foncé au survol
+const PIN_FILL = "#0D5B57";               // teal foncé
+
+const defaultCountryStyle = new Style({
+    fill: new Fill({ color: COLOR_DEFAULT }),
+    stroke: new Stroke({ color: COLOR_STROKE, width: 0.7 }),
+});
+
+const selectedCountryStyle = new Style({
+    fill: new Fill({ color: COLOR_SELECTED }),
+    stroke: new Stroke({ color: COLOR_STROKE, width: 0.7 }),
+});
+
+const hoverCountryStyle = new Style({
+    fill: new Fill({ color: COLOR_HOVER }),
+    stroke: new Stroke({ color: COLOR_STROKE, width: 0.7 }),
+});
+
+const pinStyle = new Style({
+    image: new CircleStyle({
+        radius: 7,
+        fill: new Fill({ color: PIN_FILL }),
+    }),
+});
+
+// ...imports identiques...
+
+export default function WorldSugarMap() {
+    const mapDivRef = useRef<HTMLDivElement>(null);
+    const popupRef = useRef<HTMLDivElement>(null);
+    const [mode, setMode] = useState<Mode>("top-producers");
+    const [countryLayer, setCountryLayer] = useState<VectorLayer<VectorSource> | null>(null);
+    const [hoveredFeature, setHoveredFeature] = useState<any>(null);
+    const [selected, setSelected] = useState<{ name: string; iso3: string } | null>(null);
+    const [overlay, setOverlay] = useState<Overlay | null>(null);
+
+    const styleFunction = (feature: any) => {
+        const iso3 = (feature.get("ISO_A3") || feature.get("iso_a3") || "").toUpperCase();
+        const set = mode === "all-producers" ? ALL_SUGAR_PRODUCERS
+            : mode === "top-producers" ? TOP_PRODUCERS
+                : COMPETITORS_SPECIALTY;
+        return set.has(iso3) ? selectedCountryStyle : defaultCountryStyle;
     };
 
     useEffect(() => {
-        if (!mapRef.current) return;
+        if (!mapDivRef.current) return;
 
-        const reunionExtent = transformExtent(
-            [54.5, -22.0, 56.5, -20.5],
-            'EPSG:4326',
-            'EPSG:3857'
+        // ✅ UNE SEULE SOURCE + URL cohérente (underscore)
+        const countriesSource = new VectorSource({
+            url: "/world_countries.geojson",
+            format: new GeoJSON({
+                dataProjection: "EPSG:4326",
+                featureProjection: "EPSG:3857",
+            }),
+            wrapX: false,
+            attributions: "© Natural Earth",
+        });
+
+        countriesSource.on("featuresloadend", () =>
+            console.log("✓ countries loaded:", countriesSource.getFeatures().length)
+        );
+        countriesSource.on("featuresloaderror", (e) =>
+            console.error("✗ load error", e)
         );
 
-        const defaultCommunesStyle = new Style({
-            stroke: new Stroke({ color: 'rgba(45, 95, 82, 0.6)', width: 0.7 }),
-            fill: new Fill({ color: '#FFFFFF' })
+        const countries = new VectorLayer({
+            source: countriesSource,
+            style: styleFunction,
         });
 
-        const hoverCommunesStyle = new Style({
-            fill: new Fill({ color: '#2D5F52' }),
+        // (Optionnel) frontières internes si tu as le fichier
+        const borders = new VectorLayer({
+            source: new VectorSource({
+                url: "/world_borders.geojson", // assure qu’il existe sinon enlève cette couche
+                format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
+            }),
+            style: new Style({ stroke: new Stroke({ color: "rgba(45,95,82,0.6)", width: 0.6 }) }),
         });
 
-        const entities = [
-            ///////////// Recherche en canne à sucre ///////////// PAS OK
-            {
-                name: 'Recherche en canne à sucre',
-                coordinates: [55.50387635597419, -20.900633880894485],
-                image: entitie1,
-            },
-            {
-                name: 'Recherche en canne à sucre',
-                coordinates: [55.447877031256986, -20.882203864501154],
-                image: entitie1,
-            },
-            {
-                name: 'Recherche en canne à sucre',
-                coordinates: [55.4904563580626, -21.306420061837542],
-                image: entitie1,
-            },
-            {
-                name: 'Recherche en canne à sucre',
-                coordinates: [55.4879560554464, -21.305947261846523],
-                image: entitie1,
-            },
-
-            ///////////// Centre de réception des cannes à sucres ///////////// OK
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.3026892383773, -20.964962234163195],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.251122818413634, -21.061422851765354],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.29588577688214, -21.19750777405142],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.40187359290508, -21.274877186077216],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.48707585772701, -21.319780364547217],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.528137381511186, -21.35546850009855],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.64687327314811, -21.376696462666544],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.729365781745784, -21.362133209600152],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.80614497494987, -21.13151106839816],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.72413910887077, -21.044376292190243],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.6597350836412 - 20.957459222656215],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.636852336769564, -20.908844232097778],
-                image: entitie2,
-
-            },
-            {
-                name: 'Centre de réception des cannes à sucres',
-                coordinates: [55.529211314257886, -20.901301169524025],
-                image: entitie2,
-
-            },
-
-            ///////////// Pôle canne ///////////// OK ENVIRON
-            {
-                name: 'Pôle canne',
-                coordinates: [55.7167, -21.0333],
-                image: entitie3,
-            },
-            {
-                name: 'Pôle canne',
-                coordinates: [55.6000, -20.9000],
-                image: entitie3,
-            },
-            {
-                name: 'Pôle canne',
-                coordinates: [55.4000, -21.2833],
-                image: entitie3,
-            },
-            {
-                name: 'Pôle canne',
-                coordinates: [55.4667, -21.3333],
-                image: entitie3,
-            },
-            {
-                name: 'Pôle canne',
-                coordinates: [55.2833, -21.0000],
-                image: entitie3,
-            },
-            {
-                name: 'Pôle canne',
-                coordinates: [55.6333, -21.3833],
-                image: entitie3,
-            },
-
-            ///////////// Terminal sucrier ///////////// OK
-            {
-                name: 'Terminal sucrier',
-                coordinates: [55.28310991755115, -20.932297456802974],
-                image: entitie4,
-            },
-            ///////////// Centres de conditionnement ///////////// OK
-            {
-                name: 'Centres de conditionnement',
-                coordinates: [55.32009273933543, -20.945778950303474],
-                image: entitie5,
-            },
-            ///////////// Centre logistique ///////////// OK
-            {
-                name: 'Centre logistique',
-                coordinates: [55.28856540897765, -20.946513687003524],
-                image: entitie6,
-            },
-        ];
-
-        const entitiesSource = new VectorSource();
-
-        entities.forEach((entity) => {
-            const feature = new Feature({
-                geometry: new Point(fromLonLat(entity.coordinates)),
-                name: entity.name,
+        // Pins
+        const pinSource = new VectorSource();
+        PINS.forEach(p => {
+            const f = new Feature({
+                geometry: new Point(fromLonLat([p.lon, p.lat])),
+                name: p.name,
+                iso3: p.iso3,
             });
-
-            feature.setStyle(
-                new Style({
-                    image: new Icon({
-                        src: entity.image,
-                        scale: 0.3,
-                    }),
-                })
-            );
-
-            entitiesSource.addFeature(feature);
+            f.setStyle(pinStyle);
+            pinSource.addFeature(f);
         });
+        const pins = new VectorLayer({ source: pinSource });
 
-        const communesLayer = new VectorLayer({
-            source: new VectorSource({
-                url: '/communes.geojson',
-                format: new GeoJSON({
-                    dataProjection: 'EPSG:4326',
-                    featureProjection: 'EPSG:3857',
-                }),
-            }),
-            style: defaultCommunesStyle,
-        });
+        const worldExtent = getProjection("EPSG:3857")!.getExtent();
 
-        const soleCanniereLayer = new VectorLayer({
-            source: new VectorSource({
-                url: '/sole-canniere.geojson',
-                format: new GeoJSON(),
-            }),
-            style: new Style({
-                fill: new Fill({ color: 'rgba(45, 95, 82, 0.6)' }),
-            }),
-        });
-
-        const groupLayer = new VectorLayer({
-            source: new VectorSource({
-                url: '/bassin-cannier.geojson',
-                format: new GeoJSON(),
-            }),
-            style: defaultCommunesStyle,
-        });
-
-        const zonesPCLayer = new VectorLayer({
-            source: new VectorSource({
-                url: '/zones-pc.geojson',
-                format: new GeoJSON({
-                    dataProjection: 'EPSG:4326',
-                    featureProjection: 'EPSG:3857',
-                }),
-            }),
-            style: defaultCommunesStyle,
-        });
-
-        const reunionLayer = new VectorLayer({
-            source: new VectorSource({
-                url: '/all-reunion.geojson',
-                format: new GeoJSON(),
-            }),
-            style: defaultCommunesStyle,
-        });
-
-        const intercoLayer = new VectorLayer({
-            source: new VectorSource({
-                url: '/interco.geojson',
-                format: new GeoJSON(),
-            }),
-            style: defaultCommunesStyle
-        })
-
-        const entitiesLayer = new VectorLayer({
-            source: entitiesSource,
-        });
-
-        let mainLayer;
-        if (selectedZone === 'commune') mainLayer = communesLayer;
-        if (selectedZone === 'group') mainLayer = groupLayer;
-        if (selectedZone === 'interco') mainLayer = intercoLayer;
-        if (selectedZone === 'zones-pc') mainLayer = zonesPCLayer;
-
-        const layersToShow = [
-            reunionLayer,
-            mainLayer,
-            soleCanniereLayer,
-            entitiesLayer
-        ].filter((layer): layer is VectorLayer<VectorSource<Feature>> => layer !== undefined);
-
-        const isMobile = window.innerWidth < 640;
-
-        const mapInstance = new Map({
-            target: mapRef.current,
-            layers: layersToShow,
+        const map = new Map({
+            target: mapDivRef.current,
+            layers: [countries, /* borders? */ pins],
             view: new View({
-                center: fromLonLat([55.5364, -21.1151]),
-                zoom: isMobile ? 9.5 : 10,
-                minZoom: 9.5,
-                maxZoom: 11,
-                extent: reunionExtent,
+                center: fromLonLat([10, 20]),
+                zoom: 3,          // ← plus éloigné au départ (essaie 0.8 si tu veux)
+                minZoom: 2,       // ← autorise le dézoom fort
+                maxZoom: 4,      // ← laisse tel quel ou ajuste pour tes besoins
+                extent: worldExtent,        // ← limite la navigation à un seul monde
+                constrainOnlyCenter: true,
             }),
             controls: [],
         });
 
-        let lastHoveredFeature: any = null;
+        const ov = new Overlay({
+            element: popupRef.current as HTMLElement,
+            offset: [0, -15],
+            positioning: "bottom-center",
+            stopEvent: true,
+        });
+        map.addOverlay(ov);
 
-        mapInstance.on('pointermove', (evt) => {
-            const feature = mapInstance.forEachFeatureAtPixel(evt.pixel, (feat, layer) => {
-                if (
-                    (selectedZone === 'commune' && layer === communesLayer) ||
-                    (selectedZone === 'reunion' && layer === reunionLayer) ||
-                    (selectedZone === 'group' && layer === groupLayer) ||
-                    (selectedZone === 'interco' && layer === intercoLayer) ||
-                    (selectedZone === 'zones-pc' && layer === zonesPCLayer)
-                ) {
-                    return feat;
-                }
-                return null;
-            });
+        let lastHover: Feature | null = null;
 
-            if (feature !== lastHoveredFeature) {
-                if (lastHoveredFeature instanceof Feature) {
-                    lastHoveredFeature.setStyle(defaultCommunesStyle);
+        const moveKey = map.on("pointermove", (evt) => {
+            const feat = map.forEachFeatureAtPixel(
+                evt.pixel,
+                (f, layer) => (layer === countries ? (f as Feature) : null),
+                { hitTolerance: 3, layerFilter: (l) => l === countries } // + tolérance = moins de “flicker”
+            );
+
+            if (feat !== lastHover) {
+                // remettre l’ancien feature à son style de couche (pas un style figé)
+                if (lastHover) lastHover.setStyle(undefined);
+
+                // appliquer le style hover sur le nouveau
+                if (feat) feat.setStyle(hoverCountryStyle);
+
+                lastHover = feat ?? null;
+            }
+
+            // curseur pointeur sur les pays
+            (map.getTargetElement() as HTMLElement).style.cursor = feat ? "pointer" : "";
+        });
+
+        // quand la souris quitte la map ou au cleanup
+        const outKey = map.on("pointerout", () => {
+            if (lastHover) lastHover.setStyle(undefined);
+            lastHover = null;
+            (map.getTargetElement() as HTMLElement).style.cursor = "";
+        });
+
+        return () => {
+            unByKey(moveKey);
+            unByKey(outKey);
+            map.setTarget(undefined);
+        };
+
+        map.on("singleclick", (evt) => {
+            let handled = false;
+            const pin = map.forEachFeatureAtPixel(evt.pixel, (f, layer) => (layer === pins ? f : null));
+            if (pin) {
+                const iso3 = (pin.get("iso3") || "").toUpperCase();
+                const name = pin.get("name") || "";
+                setSelected({ iso3, name });
+                ov.setPosition((pin.getGeometry() as Point).getCoordinates());
+                handled = true;
+            }
+            if (!handled) {
+                const f = map.forEachFeatureAtPixel(evt.pixel, (feat, layer) => (layer === countries ? feat : null));
+                if (f) {
+                    const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
+                    const admin = f.get("ADMIN") || f.get("name") || "Pays";
+                    const set = mode === "all-producers" ? ALL_SUGAR_PRODUCERS
+                        : mode === "top-producers" ? TOP_PRODUCERS
+                            : COMPETITORS_SPECIALTY;
+                    if (set.has(iso3)) {
+                        setSelected({ iso3, name: admin });
+                        ov.setPosition(evt.coordinate);
+                    } else {
+                        setSelected(null);
+                        ov.setPosition(undefined);
+                    }
+                } else {
+                    setSelected(null);
+                    ov.setPosition(undefined);
                 }
-                if (feature instanceof Feature) {
-                    feature.setStyle(hoverCommunesStyle);
-                }
-                lastHoveredFeature = feature;
             }
         });
 
-        mapInstance.on('singleclick', function (evt) {
-            const feature = mapInstance.forEachFeatureAtPixel(evt.pixel, (feat, layer) => {
-                if (
-                    (selectedZone === 'commune' && layer === communesLayer) ||
-                    (selectedZone === 'reunion' && layer === reunionLayer) ||
-                    (selectedZone === 'group' && layer === groupLayer) ||
-                    (selectedZone === 'interco' && layer === intercoLayer) ||
-                    (selectedZone === 'zones-pc' && layer === zonesPCLayer)
-                ) {
-                    return feat;
-                }
-                return null;
-            });
+        setCountryLayer(countries);
+        setOverlay(ov);
 
-            if (feature) {
-                setSelectedFeature(feature);
-            } else {
-                setSelectedFeature(null);
+        return () => map.setTarget(undefined);
+    }, []);
+
+    useEffect(() => {
+        if (!countryLayer) return;
+        countryLayer.setStyle(styleFunction);
+        countryLayer.changed();
+        if (selected) {
+            const set = mode === "all-producers" ? ALL_SUGAR_PRODUCERS
+                : mode === "top-producers" ? TOP_PRODUCERS
+                    : COMPETITORS_SPECIALTY;
+            if (!set.has(selected.iso3)) {
+                setSelected(null);
+                overlay?.setPosition(undefined);
             }
-        });
-
-        setMap(mapInstance);
-
-        return () => mapInstance.setTarget(undefined);
-    }, [selectedZone]);
+        }
+    }, [mode]);
 
     return (
-        <div style={{ width: '100%', height: '700px', position: 'relative' }}>
-            <div ref={mapRef} style={{ width: '100%', height: '100%', backgroundColor: '#eaeeed' }} />
-            {/* Barre de recherche */}
-            <div className="absolute bottom-4 right-4 bg-white shadow-lg rounded-sm z-10 w-35 md:w-80">
-                <div className="relative">
-                    {filteredZones.length > 0 && (
-                        <ul className="absolute bottom-full mb-2 bg-white border rounded-sm shadow-lg max-h-40 overflow-y-auto w-full z-20">
-                            {filteredZones.map((zone) => (
-                                <li
-                                    key={zone}
-                                    onClick={() => handleSelect(zone)}
-                                    className="p-2 hover:bg-gray-100 cursor-pointer"
-                                >
-                                    {zone}
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                    <input
-                        type="text"
-                        value={searchTerm}
-                        onChange={handleSearch}
-                        placeholder="Rechercher ..."
-                        className="w-full p-3 border rounded-sm"
-                    />
-                </div>
-            </div>
-            {(selectedFeature || selectedName) && (
-                <div className="absolute z-20 p-4 top-0 right-0 w-screen">
-                    {selectedFeature && (
-                        <MapList
-                            zone={selectedFeature.get('name')?.trim().toLowerCase()}
-                            onClose={handleCloseCard}
-                        />
-                    )}
-                    {!selectedFeature && selectedName && (
-                        <MapList zone={selectedName} onClose={handleCloseCard} />
-                    )}
-                </div>
-            )}
-            <div className="relative bottom-170 left-4 bg-white p-4 shadow-lg rounded-sm z-10 w-40 sm:w-64">
-                <h3 className="font-semibold mb-2 hidden sm:block">Changer la sélection :</h3>
-                {/* Desktop view */}
-                <div className="hidden sm:grid font-light">
-                    <label className="flex items-center space-x-2">
+        <div className="relative w-full" style={{ height: 700, background: COLOR_BG }}>
+            <div ref={mapDivRef} className="w-full h-full" />
+
+            {/* panneau radio */}
+            <div className="absolute left-4 top-4 bg-white shadow-lg rounded-sm z-10 w-64 p-4">
+                <h3 className="font-semibold mb-2">Changer la sélection :</h3>
+                <div className="grid gap-2 text-sm font-light">
+                    <label className="flex items-center gap-2">
                         <input
                             type="radio"
-                            name="zone"
-                            value="reunion"
-                            checked={selectedZone === 'reunion'}
-                            onChange={() => setSelectedZone('reunion')}
+                            name="mode"
+                            value="all-producers"
+                            checked={mode === "all-producers"}
+                            onChange={() => setMode("all-producers")}
                         />
-                        <span>Toute La Réunion</span>
+                        <span>Pays producteurs de sucre de canne et de betterave</span>
                     </label>
-                    <label className="flex items-center space-x-2">
+                    <label className="flex items-center gap-2">
                         <input
                             type="radio"
-                            name="zone"
-                            value="group"
-                            checked={selectedZone === 'group'}
-                            onChange={() => setSelectedZone('group')}
+                            name="mode"
+                            value="top-producers"
+                            checked={mode === "top-producers"}
+                            onChange={() => setMode("top-producers")}
                         />
-                        <span>Bassins canniers</span>
+                        <span>Principaux producteurs de sucre au monde</span>
                     </label>
-                    <label className="flex items-center space-x-2">
+                    <label className="flex items-center gap-2">
                         <input
                             type="radio"
-                            name="zone"
-                            value="zones-pc"
-                            checked={selectedZone === 'zones-pc'}
-                            onChange={() => setSelectedZone('zones-pc')}
+                            name="mode"
+                            value="competitors-specialty"
+                            checked={mode === "competitors-specialty"}
+                            onChange={() => setMode("competitors-specialty")}
                         />
-                        <span>Zones pôles canne</span>
-                    </label>
-                    <label className="flex items-center space-x-2">
-                        <input
-                            type="radio"
-                            name="zone"
-                            value="interco"
-                            checked={selectedZone === 'interco'}
-                            onChange={() => setSelectedZone('interco')}
-                        />
-                        <span>Intercommunalités</span>
-                    </label>
-                    <label className="flex items-center space-x-2">
-                        <input
-                            type="radio"
-                            name="zone"
-                            value="commune"
-                            checked={selectedZone === 'commune'}
-                            onChange={() => setSelectedZone('commune')}
-                        />
-                        <span>Communes</span>
+                        <span>Principaux concurrents des sucres de spécialité</span>
                     </label>
                 </div>
             </div>
 
-            {/* Mobile view */}
-            <MobileDropdown
-                selectedZone={selectedZone}
-                setSelectedZone={setSelectedZone}
-            />
-
-            {/* Bouton + légende mobile collés à la map */}
-            <div className="sm:hidden absolute bottom-4 left-4">
-                {!showLegendMobile && (
-                    <button
-                        onClick={() => setShowLegendMobile(true)}
-                        className="flex items-center justify-between px-4 py-3 rounded-sm shadow bg-white text-black font-semibold text-base w-[140px]"
-                    >
-                        <span>Légende</span>
-                        <IoIosArrowUp className="ml-2 text-gray-600" />
-                    </button>
-                )}
-
-                {showLegendMobile && (
-                    <div className="relative bg-white shadow-lg rounded-sm p-4 w-[260px] z-10">
-                        {/* Flèche de fermeture */}
-                        <div className="absolute top-2 right-2">
-                            <button onClick={() => setShowLegendMobile(false)}>
-                                <IoIosArrowDown size={20} className="text-gray-600" />
-                            </button>
-                        </div>
-
-                        <h4 className="font-semibold mb-2">Légende</h4>
-                        <ul className="grid font-light gap-1 text-xs">
-                            <li className="flex items-center space-x-2">
-                                <img src={entitie1} alt="Recherche en canne à sucre" className="w-4 h-4" />
-                                <span>Recherche en canne à sucre</span>
-                            </li>
-                            <li className="flex items-center space-x-2">
-                                <img src={entitie2} alt="Centre de réception des cannes à sucres" className="w-4 h-4" />
-                                <span>Centre de réception des cannes à sucres</span>
-                            </li>
-                            <li className="flex items-center space-x-2">
-                                <img src={entitie3} alt="Pôle canne" className="w-4 h-4" />
-                                <span>Pôle canne</span>
-                            </li>
-                            <li className="flex items-center space-x-2">
-                                <img src={entitie4} alt="Terminal sucrier" className="w-4 h-4" />
-                                <span>Terminal sucrier</span>
-                            </li>
-                            <li className="flex items-center space-x-2">
-                                <img src={entitie5} alt="Centres de conditionnement" className="w-4 h-4" />
-                                <span>Centres de conditionnement</span>
-                            </li>
-                            <li className="flex items-center space-x-2">
-                                <img src={entitie6} alt="Centre logistique" className="w-4 h-4" />
-                                <span>Centre logistique</span>
-                            </li>
-                            <li className="flex items-center space-x-2">
-                                <div className="w-4 h-4 rounded-full" style={{ backgroundColor: 'rgba(45, 95, 82, 0.6)' }} />
-                                <span>Sole cannière</span>
-                            </li>
-                        </ul>
-                    </div>
-                )}
-            </div>
-
-            {/* Légende desktop */}
-            <div
-                className="absolute bottom-4 left-4 bg-white p-4 shadow-lg rounded-sm z-10 sm:block hidden"
-
-            >
-                <h4 className="font-semibold mb-4">Légende</h4>
-                <ul className="grid gap-1 text-xs font-light">
-                    <li className="flex items-center space-x-3">
-                        <img src={entitie1} alt="Recherche en canne à sucre" className="w-5 h-5" />
-                        <span>Recherche en canne à sucre</span>
+            {/* légende */}
+            <div className="absolute left-4 bottom-4 bg-white shadow-lg rounded-sm z-10 p-4 w-72">
+                <h4 className="font-semibold mb-2">Légende</h4>
+                <ul className="text-xs font-light grid gap-2">
+                    <li className="flex items-center gap-3">
+                        <div className="w-5 h-5 rounded" style={{ background: COLOR_SELECTED }} />
+                        <span>Pays sélectionnés</span>
                     </li>
-                    <li className="flex items-center space-x-3">
-                        <img src={entitie2} alt="Centre de réception des cannes à sucres" className="w-5 h-5" />
-                        <span>Centre de réception des cannes à sucres</span>
-                    </li>
-                    <li className="flex items-center space-x-3">
-                        <img src={entitie3} alt="Pôle canne" className="w-5 h-5" />
-                        <span>Pôle canne</span>
-                    </li>
-                    <li className="flex items-center space-x-3">
-                        <img src={entitie4} alt="Terminal sucrier" className="w-5 h-5" />
-                        <span>Terminal sucrier</span>
-                    </li>
-                    <li className="flex items-center space-x-3">
-                        <img src={entitie5} alt="Centres de conditionnement" className="w-5 h-5" />
-                        <span>Centres de conditionnement</span>
-                    </li>
-                    <li className="flex items-center space-x-3">
-                        <img src={entitie6} alt="Centre logistique" className="w-5 h-5" />
-                        <span>Centre logistique</span>
-                    </li>
-                    <li className="flex items-center space-x-3">
-                        <div className="w-5 h-5 rounded-full" style={{ backgroundColor: 'rgba(45, 95, 82, 0.6)' }}></div>
-                        <span>Sole cannière</span>
+                    <li className="flex items-center gap-3">
+                        <div className="w-5 h-5 rounded-full" style={{ background: PIN_FILL }} />
+                        <span>Cliquer pour plus d’informations</span>
                     </li>
                 </ul>
+            </div>
+
+            {/* popup/card */}
+            <div
+                ref={popupRef}
+                className="absolute z-20"
+                style={{ transform: "translate(-50%, -100%)" }}
+            >
+                {selected && (
+                    <div className="bg-white/95 backdrop-blur shadow-xl rounded-md p-4 w-72">
+                        <div className="flex items-start justify-between mb-2">
+                            <h5 className="font-semibold">{selected.name}</h5>
+                            <button
+                                className="text-gray-500 hover:text-gray-800"
+                                onClick={() => {
+                                    setSelected(null);
+                                    overlay?.setPosition(undefined);
+                                }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        <div className="text-sm text-gray-700 space-y-2">
+                            <p>ISO-3 : {selected.iso3}</p>
+                            <p className="text-gray-600">
+                                Placeholder: stats sucre / liens / CTA.
+                            </p>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
