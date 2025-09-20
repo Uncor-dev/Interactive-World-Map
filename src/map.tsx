@@ -42,9 +42,8 @@ const PINS: Array<{ iso3: string; name: string; lon: number; lat: number }> = [
 // ————————————————————————————————————————
 // Styles (proches de ta carte Réunion)
 const COLOR_BG = "#F4F5F0";      // fond
-const COLOR_COUNTRY = "#eaeeed"; // blanc cassé
+const COLOR_COUNTRY = "#e8e8e8"; // blanc cassé
 const COLOR_HOVER = "#E6E9E3"; // blanc cassé un poil plus foncé au hover
-const COLOR_BORDER = "#FFFFFF"; // blanc pur
 const COLOR_SELECTED = "#88b940";         // vert “principal”
 const PIN_FILL = "#0D5B57";               // teal foncé
 
@@ -104,7 +103,7 @@ export default function WorldSugarMap() {
         });
 
         const bordersSource = new VectorSource({
-            url: "/world_borders.geojson", // généré avec: -lines (ou -innerlines) + -dissolve2
+            url: "/world_borders.geojson",
             format: new GeoJSON({
                 dataProjection: "EPSG:4326",
                 featureProjection: "EPSG:3857",
@@ -153,8 +152,8 @@ export default function WorldSugarMap() {
             source: bordersSource,
             style: new Style({
                 stroke: new Stroke({
-                    color: "#FFFFFF",
-                    width: 1.5,
+                    color: "#F4F5F0",
+                    width: 1,
                     lineCap: "round",
                     lineJoin: "round",
                 }),
