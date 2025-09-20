@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { get as getProjection } from "ol/proj";
+import { getCenter, getWidth, getHeight } from "ol/extent";
 import { unByKey } from "ol/Observable";
 import "ol/ol.css";
 import { Map, View } from "ol";
@@ -39,27 +40,17 @@ const PINS: Array<{ iso3: string; name: string; lon: number; lat: number }> = [
     { iso3: "AUS", name: "Australie", lon: 133.7751, lat: -25.274 }
 ];
 
-// ————————————————————————————————————————
-// Styles (proches de ta carte Réunion)
-const COLOR_BG = "#F4F5F0";      // fond
-const COLOR_COUNTRY = "#e8e8e8"; // blanc cassé
-const COLOR_HOVER = "#E6E9E3"; // blanc cassé un poil plus foncé au hover
-const COLOR_SELECTED = "#88b940";         // vert “principal”
-const PIN_FILL = "#0D5B57";               // teal foncé
+const COLOR_BG = "#F4F5F0";
+const COLOR_COUNTRY = "#e8e8e8";
+const COLOR_SELECTED = "#88b940";
+const PIN_FILL = "#0D5B57";
 
 const defaultCountryStyle = new Style({
     fill: new Fill({ color: COLOR_COUNTRY }),
-    // pas de stroke => on laisse la couche "borders" gérer les traits
 });
 
-// pays sélectionnés (si tu gardes ce mode)
 const selectedCountryStyle = new Style({
     fill: new Fill({ color: "#88b940" }),
-});
-
-// hover
-const hoverCountryStyle = new Style({
-    fill: new Fill({ color: COLOR_HOVER }),
 });
 
 const pinStyle = new Style({
@@ -69,14 +60,11 @@ const pinStyle = new Style({
     }),
 });
 
-// ...imports identiques...
-
 export default function WorldSugarMap() {
     const mapDivRef = useRef<HTMLDivElement>(null);
     const popupRef = useRef<HTMLDivElement>(null);
     const [mode, setMode] = useState<Mode>("top-producers");
     const [countryLayer, setCountryLayer] = useState<VectorLayer<VectorSource> | null>(null);
-    const [hoveredFeature, setHoveredFeature] = useState<any>(null);
     const [selected, setSelected] = useState<{ name: string; iso3: string } | null>(null);
     const [overlay, setOverlay] = useState<Overlay | null>(null);
 
@@ -91,24 +79,26 @@ export default function WorldSugarMap() {
     useEffect(() => {
         if (!mapDivRef.current) return;
 
-        // ===== SOURCES =====
+        // ==== SOURCES ====
         const countriesSource = new VectorSource({
             url: "/world_countries.geojson",
-            format: new GeoJSON({
-                dataProjection: "EPSG:4326",
-                featureProjection: "EPSG:3857",
-            }),
-            wrapX: false,
+            format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
+            wrapX: true, // ✅ pas de répétition
             attributions: "© Natural Earth",
+        });
+
+        countriesSource.on("addfeature", (e: any) => {
+            const f = e.feature;
+            const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
+            if (iso3 === "ATA") {
+                countriesSource.removeFeature(f);
+            }
         });
 
         const bordersSource = new VectorSource({
             url: "/world_borders.geojson",
-            format: new GeoJSON({
-                dataProjection: "EPSG:4326",
-                featureProjection: "EPSG:3857",
-            }),
-            wrapX: false,
+            format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
+            wrapX: true, // ✅
         });
 
         const pinSource = new VectorSource({ wrapX: false });
@@ -122,7 +112,6 @@ export default function WorldSugarMap() {
             pinSource.addFeature(f);
         });
 
-        // Logs utiles
         countriesSource.on("featuresloadend", () =>
             console.log("✓ countries loaded:", countriesSource.getFeatures().length)
         );
@@ -132,32 +121,20 @@ export default function WorldSugarMap() {
         );
         bordersSource.on("featuresloaderror", (e) => console.error("✗ borders load error", e));
 
-        // ===== LAYERS =====
+        // ==== LAYERS ====
         const countries = new VectorLayer({
             source: countriesSource,
-            style: (feature) => {
-                const iso3 = (feature.get("ISO_A3") || feature.get("iso_a3") || "").toUpperCase();
-                const set =
-                    mode === "all-producers"
-                        ? ALL_SUGAR_PRODUCERS
-                        : mode === "top-producers"
-                            ? TOP_PRODUCERS
-                            : COMPETITORS_SPECIALTY;
-                return set.has(iso3) ? selectedCountryStyle : defaultCountryStyle;
-            },
+            style: styleFunction,
+            renderBuffer: 512,
         });
         countries.setZIndex(5);
 
         const borders = new VectorLayer({
             source: bordersSource,
             style: new Style({
-                stroke: new Stroke({
-                    color: "#F4F5F0",
-                    width: 1,
-                    lineCap: "round",
-                    lineJoin: "round",
-                }),
+                stroke: new Stroke({ color: "#F4F5F0", width: 1.2, lineCap: "round", lineJoin: "round" }),
             }),
+            renderBuffer: 512,
         });
         borders.setZIndex(10);
 
@@ -166,27 +143,36 @@ export default function WorldSugarMap() {
 
         // ===== MAP & VIEW =====
         const worldExtent = getProjection("EPSG:3857")!.getExtent();
+        const f = 1.08;
+        const c = getCenter(worldExtent);
+        const w2 = (getWidth(worldExtent) * f) / 2;
+        const h2 = (getHeight(worldExtent) * f) / 2;
+        const paddedExtent: [number, number, number, number] = [
+            c[0] - w2, c[1] - h2, c[0] + w2, c[1] + h2
+        ];
+
         const map = new Map({
-            target: mapDivRef.current,
+            target: mapDivRef.current!,
             layers: [countries, borders, pins],
             view: new View({
-                center: fromLonLat([10, 20]),
-                zoom: 3,
-                minZoom: 2,
-                maxZoom: 4,
-                extent: worldExtent,
-                constrainOnlyCenter: true,
+                center: fromLonLat([2.2137, 46.2276]),
+                zoom: 1.0,
+                minZoom: 0.5,
+                maxZoom: 5,
+                extent: paddedExtent,
+                constrainOnlyCenter: false,
+                multiWorld: false,
+                enableRotation: false,
             }),
             controls: [],
         });
 
-        // Fit auto sur les pays au chargement
         const fitOnce = () => {
             const feats = countriesSource.getFeatures();
             if (feats.length) {
                 map.getView().fit(countriesSource.getExtent(), {
                     padding: [10, 10, 10, 10],
-                    maxZoom: 1.3,
+                    maxZoom: 1,
                     duration: 300,
                 });
                 countriesSource.un("featuresloadend", fitOnce as any);
@@ -203,34 +189,10 @@ export default function WorldSugarMap() {
         });
         map.addOverlay(ov);
 
-        // ===== HOVER (sans state React) =====
-        let lastHover: Feature | null = null;
-        const moveKey = map.on("pointermove", (evt) => {
-            const feat = map.forEachFeatureAtPixel(
-                evt.pixel,
-                (f, layer) => (layer === countries ? (f as Feature) : null),
-                { hitTolerance: 3, layerFilter: (l) => l === countries }
-            );
-
-            if (feat !== lastHover) {
-                if (lastHover) lastHover.setStyle(undefined); // rend au style de couche
-                if (feat) feat.setStyle(hoverCountryStyle);
-                lastHover = feat ?? null;
-            }
-            (map.getTargetElement() as HTMLElement).style.cursor = feat ? "pointer" : "";
-        });
-
-        const outKey = map.on("pointerout", () => {
-            if (lastHover) lastHover.setStyle(undefined);
-            lastHover = null;
-            (map.getTargetElement() as HTMLElement).style.cursor = "";
-        });
-
         // ===== CLICK (pins → pays) =====
         const clickKey = map.on("singleclick", (evt) => {
             let handled = false;
 
-            // pins d'abord
             const pin = map.forEachFeatureAtPixel(evt.pixel, (f, layer) => (layer === pins ? f : null));
             if (pin) {
                 const iso3 = (pin.get("iso3") || "").toUpperCase();
@@ -268,18 +230,14 @@ export default function WorldSugarMap() {
             }
         });
 
-        // exposer au reste du composant
         setCountryLayer(countries);
         setOverlay(ov);
 
         // ===== CLEANUP (unique) =====
         return () => {
-            unByKey(moveKey);
-            unByKey(outKey);
             unByKey(clickKey);
             map.setTarget(undefined);
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -298,9 +256,8 @@ export default function WorldSugarMap() {
     }, [mode]);
 
     return (
-        <div className="relative w-full" style={{ height: 700, background: COLOR_BG }}>
-            <div ref={mapDivRef} className="w-full h-full" />
-
+        <div className="relative w-full h-screen" style={{ background: COLOR_BG }}>
+            <div ref={mapDivRef} className="absolute inset-0" />
             {/* panneau radio */}
             <div className="absolute left-4 top-4 bg-white shadow-lg rounded-sm z-10 w-64 p-4">
                 <h3 className="font-semibold mb-2">Changer la sélection :</h3>
